@@ -31,14 +31,16 @@
 
   // The model in one function: the page recomputes a row from the snapshot figures and
   // checks the number board.json carries, so the page's code and the board's data are
-  // visibly the same arithmetic.
+  // visibly the same arithmetic. The concentration factor rides on the row: the board
+  // counts each category's crowd before it scores, and the page reads that factor back.
   function impliedOf(row, model) {
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var growthMult = 1 + (growth / 100) * model.growth_weight;
     var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
     var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
     var breadth = 1 + Math.min(Math.max((row.chains || []).length - 1, 0), model.breadth_cap_chains) * model.breadth_per_chain;
-    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * maturity * breadth));
+    var concentration = row.concentration_multiplier === null || row.concentration_multiplier === undefined ? 1 : row.concentration_multiplier;
+    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * maturity * breadth * concentration));
   }
 
   function el(tag, attrs) {
@@ -183,6 +185,41 @@
     });
   }
 
+  // The Top-10 quick jump: one button per board rank, 1 to 10. A jump scrolls that
+  // rank's row into view and flashes it, so the reader can reach the head of the board
+  // from anywhere on the page. When the rank is filtered out of the current view, the
+  // jump clears the filters and the sort first, so the row is there to land on.
+  function jumpToRank(rank) {
+    var found = DATA.rows.filter(function (r) { return r.rank === rank; })[0];
+    if (!found) return;
+    var visible = sortedRows(rows()).some(function (r) { return r.rank === rank; });
+    if (!visible) {
+      state.q = ''; state.category = 'all'; state.chain = 'all'; state.scope = 'all';
+      state.sort = 'implied'; state.dir = -1;
+      writeHash();
+      render();
+    }
+    var tr = document.getElementById('row-' + rank);
+    if (!tr) return;
+    tr.scrollIntoView({ block: 'center' });
+    tr.classList.add('flash');
+    setTimeout(function () { tr.classList.remove('flash'); }, 1600);
+  }
+  function top10Nav(existing) {
+    var nav = existing;
+    if (!nav) nav = el('nav', { id: 'top10', class: 'top10', 'aria-label': 'Jump to a top rank' });
+    nav.className = 'top10';
+    nav.setAttribute('aria-label', 'Jump to a top rank');
+    nav.textContent = '';
+    nav.appendChild(el('span', { class: 'top10-label', text: 'Jump to rank' }));
+    for (var n = 1; n <= 10; n++) {
+      (function (rank) {
+        nav.appendChild(el('button', { type: 'button', class: 'top10-btn', text: String(rank), 'aria-label': 'Jump to rank ' + rank, onclick: function () { jumpToRank(rank); } }));
+      })(n);
+    }
+    return nav;
+  }
+
   function header() {
     return el('header', { class: 'top' },
       el('div', { class: 'brand' }, el('span', { class: 'mark' }), el('span', { class: 'brand-name', text: 'Token Radar' })),
@@ -265,6 +302,7 @@
       var growthClass = r.change_7d === null ? '' : r.change_7d >= 0 ? 'pos' : 'neg';
       var rankClass = r.rank <= 3 ? 'num rank-top' : 'num';
       var tr = el('tr', {
+        id: 'row-' + r.rank,
         'data-selected': state.selected === r.slug ? 'true' : 'false',
         tabindex: '0',
         onclick: function () { openDetail(r.slug); },
@@ -315,7 +353,6 @@
         el('td', null, el('div', { class: 'name' }, el('b', { text: r.name }), el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') }))),
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
         el('td', { class: 'num ' + (r.change_7d !== null && r.change_7d >= 0 ? 'pos' : 'neg'), text: fmtPct(r.change_7d) }),
-        el('td', { class: 'num', text: fmtUsd(r.mcap_usd) }),
         el('td', null, el('span', { class: 'badge live', text: 'Already trades' }))
       ));
     });
@@ -336,13 +373,14 @@
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x (1 + min(chains - 1, ' + m.breadth_cap_chains + ') x ' + m.breadth_per_chain + ') )'
+        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x (1 + min(chains - 1, ' + m.breadth_cap_chains + ') x ' + m.breadth_per_chain + ') x concentration )'
       ),
       el('dl', null,
         el('div', null, el('dt', { text: 'Size (TVL)' }), el('dd', { text: 'The protocol’s locked value today, times ' + m.base_multiple + '. A bigger protocol is worth more at the same growth and age.' })),
         el('div', null, el('dt', { text: 'Direction (7-day growth)' }), el('dd', { text: 'TVL change over seven days, clamped to ' + m.growth_floor + '% .. +' + m.growth_cap + '%, weighted ' + m.growth_weight + '. A collapsing protocol scores below one holding steady.' })),
         el('div', null, el('dt', { text: 'Patience (age with no token)' }), el('dd', { text: 'Days since first listing, capped at ' + m.maturity_days + ' days. Older protocols have waited longer for a launch; an unlisted age uses ' + m.unknown_age_days + ' days.' })),
-        el('div', null, el('dt', { text: 'Reach (chain breadth)' }), el('dd', { text: 'One chain more than the first adds ' + (m.breadth_per_chain * 100) + '% of value, up to ' + m.breadth_cap_chains + ' extra chains. Wider distribution is worth a little more at the same TVL.' }))
+        el('div', null, el('dt', { text: 'Reach (chain breadth)' }), el('dd', { text: 'One chain more than the first adds ' + (m.breadth_per_chain * 100) + '% of value, up to ' + m.breadth_cap_chains + ' extra chains. Wider distribution is worth a little more at the same TVL.' })),
+        el('div', null, el('dt', { text: 'Crowding (category concentration)' }), el('dd', { text: 'A protocol in a crowded category scores a little lower: each extra protocol sharing its category costs ' + (m.concentration_per_extra * 100) + '% of value, up to ' + m.concentration_cap_extra + ' extra, so the factor runs 0.97 to 1.00. A lone category keeps its full value; a protocol with no category is not crowded.' }))
       ),
       el('p', { class: 'sub', text: 'The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' })
     );
@@ -391,6 +429,7 @@
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
         el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
         el('div', null, el('span', { text: 'Breadth multiplier' }), el('b', { class: 'num', text: String(row.breadth_multiplier) })),
+        el('div', null, el('span', { text: 'Concentration multiplier' }), el('b', { class: 'num', text: String(row.concentration_multiplier) })),
         el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
@@ -409,12 +448,15 @@
   }
 
   function render() {
+    var top10 = document.getElementById('top10');
     app.textContent = '';
     var shell = el('div', { class: 'shell' });
     shell.appendChild(header());
     shell.appendChild(lede());
     shell.appendChild(controls());
-    shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
+    var table = state.tab === 'pre-token' ? boardTable() : liveTable();
+    if (state.tab === 'pre-token') shell.appendChild(top10Nav(top10));
+    shell.appendChild(table);
     if (state.tab === 'pre-token') shell.appendChild(modelPanel());
     shell.appendChild(footer());
     app.appendChild(shell);

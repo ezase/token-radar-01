@@ -9,6 +9,7 @@
   --border: #dde1e7;
   --accent: #c2410c;
   --accent-soft: #fdf0e7;
+  --flash: #fde8d3;
   --positive: #15803d;
   --negative: #b91c1c;
   --gold: #92400e;
@@ -81,6 +82,16 @@ a { color: var(--accent); }
 .tabs button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
 .count { margin-left: auto; color: var(--muted); font-size: 13px; align-self: center; }
 
+/* The Top-10 quick jump: one small button per board rank, 1 to 10, above the table. */
+.top10 { display: flex; flex-wrap: wrap; align-items: center; gap: var(--step-2); margin: var(--step-4) 0; }
+.top10-label { color: var(--muted); font-size: 12px; margin-right: var(--step-1); }
+.top10-btn {
+  min-width: 32px; min-height: 32px; padding: 0 var(--step-2);
+  border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface);
+  font-family: var(--font-num); font-size: 13px;
+}
+.top10-btn:hover { border-color: var(--accent); color: var(--accent); }
+
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-panel); overflow: hidden; }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -91,6 +102,7 @@ th button:hover { color: var(--ink); }
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--accent-soft); }
 tbody tr[data-selected="true"] { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+tbody tr.flash { background: var(--flash); box-shadow: inset 3px 0 0 var(--accent); }
 .num { font-family: var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .name { display: grid; gap: 2px; }
 .name b { font-weight: 600; }

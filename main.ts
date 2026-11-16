@@ -10,6 +10,8 @@
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
 //
 // The run is deterministic: the same snapshot bytes always write the same output bytes.
+// The model's category-concentration factor is counted over the board as chosen, before
+// any row is scored, so it is deterministic too: the same board always scores the same way.
 // Nothing here touches the network, and the dashboard it ships renders with none.
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';

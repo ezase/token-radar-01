@@ -18,14 +18,20 @@
 //   breadth   = 1 + BREADTH_PER_CHAIN x min(max(chains - 1, 0), BREADTH_CAP_CHAINS)
 //               (how many chains carry its TVL: a protocol live on more chains has a
 //               wider distribution, worth a little more at the same TVL)
-//   implied   = max(1, round(base x growthMul x maturity x breadth))
+//   concentration = 1 - CONCENTRATION_PER_EXTRA x min(max(categoryCount - 1, 0), CONCENTRATION_CAP_EXTRA)
+//               (how crowded its category is on this board: a protocol in a category
+//               ten or more protocols share scores 0.97, a lone category 1.00; a
+//               protocol with no category is not crowded, so it scores 1.00)
+//   implied   = max(1, round(base x growthMul x maturity x breadth x concentration))
 //
-// Why these four signals: TVL is the protocol's size today; seven-day growth is its
+// Why these five signals: TVL is the protocol's size today; seven-day growth is its
 // direction; age with no token is how long the market has waited for a launch; chain
-// breadth is how widely its liquidity is spread. A fast-growing young protocol on one
-// chain scores below a slower, older, multi-chain one at the same TVL, and a protocol
-// whose TVL is collapsing scores below one holding steady — the ranking follows the
-// figures, not a list of names.
+// breadth is how widely its liquidity is spread; category concentration is how much
+// company it keeps — a crowded category means a launch, if it comes, shares its
+// attention with many lookalikes. A fast-growing young protocol on one chain scores
+// below a slower, older, multi-chain one at the same TVL, and a protocol whose TVL is
+// collapsing scores below one holding steady — the ranking follows the figures, not a
+// list of names.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -62,6 +68,8 @@ export interface ModelConstants {
   unknown_age_days: number;
   breadth_per_chain: number;
   breadth_cap_chains: number;
+  concentration_per_extra: number;
+  concentration_cap_extra: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -75,6 +83,9 @@ export const MODEL: ModelConstants = {
   unknown_age_days: 365,
   breadth_per_chain: 0.015,
   breadth_cap_chains: 8,
+  // 0.3% per extra protocol sharing the category, capped at 10 extras: the factor runs 0.97 to 1.00.
+  concentration_per_extra: 0.003,
+  concentration_cap_extra: 10,
 };
 
 /** The model's version label: the dashboard names it. */
@@ -115,6 +126,7 @@ export interface BoardRow {
     growth_multiplier: number;
     maturity_multiplier: number;
     breadth_multiplier: number;
+    concentration_multiplier: number;
     age_days: number | null;
   };
   farm_steps: string[];
@@ -136,6 +148,7 @@ export interface RadarRow {
   growth_multiplier: number;
   maturity_multiplier: number;
   breadth_multiplier: number;
+  concentration_multiplier: number;
   on_watchlist: boolean;
 }
 
@@ -194,7 +207,8 @@ export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   model: ModelConstants,
-): { implied: number; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
+  concentrationMult = 1,
+): { implied: number; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; concentrationMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
@@ -205,8 +219,8 @@ export function impliedValue(
   const extraChains = Math.min(Math.max(protocol.chains.length - 1, 0), model.breadth_cap_chains);
   const breadthMult = 1 + extraChains * model.breadth_per_chain;
   const base = protocol.tvl_usd * model.base_multiple;
-  const implied = Math.max(1, Math.round(base * growthMult * maturityMult * breadthMult));
-  return { implied, growthPct, growthMult, maturityMult, breadthMult, age };
+  const implied = Math.max(1, Math.round(base * growthMult * maturityMult * breadthMult * concentrationMult));
+  return { implied, growthPct, growthMult, maturityMult, breadthMult, concentrationMult, age };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -225,6 +239,33 @@ export function isRankable(p: SnapshotProtocol): boolean {
 /** The snapshot's protocol by slug. */
 function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
   return new Map(protocols.map((p) => [p.slug, p]));
+}
+
+/** How many board protocols share each named category; protocols with no category are not counted. */
+function categoryCounts(protocols: Iterable<SnapshotProtocol>): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const p of protocols) {
+    if (p.category === null) continue;
+    counts.set(p.category, (counts.get(p.category) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * One protocol's concentration factor from its category's crowd on this board: a lone
+ * category keeps 1.00, each extra protocol sharing the category costs
+ * `concentration_per_extra`, capped at `concentration_cap_extra` extras, so the factor
+ * runs 0.97 to 1.00. A protocol with no category is not crowded and keeps 1.00.
+ */
+export function concentrationMultiplier(
+  category: string | null,
+  counts: Map<string, number>,
+  model: ModelConstants,
+): number {
+  if (category === null) return 1;
+  const count = counts.get(category) ?? 1;
+  const extra = Math.min(Math.max(count - 1, 0), model.concentration_cap_extra);
+  return 1 - extra * model.concentration_per_extra;
 }
 
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
@@ -247,8 +288,12 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     .slice(0, EARLY_ROWS);
   for (const p of early) chosen.set(p.slug, p);
 
+  // The crowd is counted over the board as chosen, before any row is scored, so the
+  // concentration factor is one function of the board itself, never of a name.
+  const counts = categoryCounts(chosen.values());
   const scored = [...chosen.values()].map((p) => {
-    const v = impliedValue(p, snapshot.as_of, model);
+    const concentrationMult = concentrationMultiplier(p.category, counts, model);
+    const v = impliedValue(p, snapshot.as_of, model, concentrationMult);
     return { p, ...v };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
@@ -273,6 +318,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
       breadth_multiplier: round4(s.breadthMult),
+      concentration_multiplier: round4(s.concentrationMult),
       age_days: s.age,
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
@@ -451,6 +497,7 @@ export function radarRow(row: BoardRow, onWatchlist: boolean): RadarRow {
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     breadth_multiplier: row.model.breadth_multiplier,
+    concentration_multiplier: row.model.concentration_multiplier,
     on_watchlist: onWatchlist,
   };
 }
